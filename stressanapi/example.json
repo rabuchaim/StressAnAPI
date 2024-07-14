@@ -1,0 +1,23 @@
+{
+    "url":"http://127.0.0.1:8000/anything/you/want",
+    "method":"POST",
+    "post_data": {
+        "id": "my_customer_id",
+        "name": "spécial_çhärs",
+        "token": "mysupertoken"
+     },    
+    "headers": {
+        "Content-type": "application/json"
+    },    
+    "timeout":0.1,
+    "success_status_codes": [
+        200,
+        201,
+        202,
+        204
+     ],
+     "start_interval":0.5,
+     "start_burst":1,
+     "start_threads":1,
+     "cpu_affinity":[6]
+}
