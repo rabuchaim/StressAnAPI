@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # encoding: utf-8
 # -*- coding: utf-8 -*-
-"""StressAnAPI v1.0.1 - An API stress-test tool"""
+"""StressAnAPI v1.0.2 - An API stress-test tool"""
 """
      ____  _                        _             _    ____ ___
     / ___|| |_ _ __ ___  ___ ___   / \   _ __    / \  |  _ \_ _|
@@ -17,6 +17,11 @@
 
 """
 import sys, os, warnings
+
+MIN_PYTHON = (3,10)
+if sys.version_info < MIN_PYTHON:
+    sys.exit("Python %s.%s or later is required.\n" % MIN_PYTHON)
+
 os.environ['PYTHONWARNINGS']          ="ignore"
 os.environ['PYTHONDONTWRITEBYTECODE'] ="ignore"
 warnings.simplefilter("ignore")
@@ -24,17 +29,17 @@ sys.dont_write_bytecode = True
 sys.tracebacklimit = 0
 
 __appname__ = 'StressAnAPI'
-__version__ = '1.0.1'
-__release__ = '13/July/2024'
+__version__ = '1.0.2'
+__release__ = '15/July/2024'
 __descr__   = 'A stress-test tool for API servers'
 __url__     = 'https://github.com/rabuchaim/StressAnAPI/'
 
+import logging, logging.handlers
 import socket, struct, binascii, itertools, math, gc
 import tty, termios, subprocess, ctypes, shlex, signal, shutil
 import urllib, urllib.request, urllib.response, urllib.parse, bisect
 import re, argparse, threading, time, json, random, textwrap, functools
 from typing import List,Dict
-from urllib.parse import urlparse
 from collections import defaultdict, deque
 from datetime import timedelta, datetime as dt
 
@@ -68,8 +73,13 @@ class classGlobal:
     event_pause_time = None
     event_quit = threading.Event()
     event_debug = threading.Event()
-    garbage_collector_interval = 300
 
+    logger = None
+    syslog_message_formatter = '%(message)s'
+
+    garbage_collector_interval = 300
+    stats_window_size = 50000
+    
     middot = '\xb7'
     doubleLine = "═"
     singleLine = "─"
@@ -92,6 +102,7 @@ class classGlobal:
     default_burst = 1
     default_threads = 1
     default_timeout = 1
+    default_syslog_server_url = 'udp://127.0.0.1:514/local7'
     default_success_status_codes = [200,201,202,204]
     default_user_agent = f"{__appname__} v{__version__}"
     default_template = {
@@ -114,6 +125,7 @@ class classGlobal:
         "start_burst": default_burst,
         "start_threads": default_threads,
         "cpu_affinity": [-1],
+        "syslog_server_url": default_syslog_server_url,
     }
 
 G = classGlobal()
@@ -149,7 +161,7 @@ class StressAnAPIConfigException(StressAnAPIException):...
 
 class configFile:
     def __init__(self,filename,config_dict,url,method,post_data,headers,timeout,success_status_codes,
-                 interval,burst,threads,cpu_affinity,start_time):
+                 interval,burst,threads,cpu_affinity,syslog_server,start_time):
         self.config_file = filename
         self.config_dict = config_dict
         self.url = url
@@ -162,6 +174,7 @@ class configFile:
         self.burst = burst
         self.threads = threads
         self.cpu_affinity = cpu_affinity
+        self.syslog_server = syslog_server
         self.elapsed_load_time = '%.6f'%(time.monotonic() - start_time)
 
 def validateConfigFile(config_file):
@@ -185,6 +198,7 @@ def validateConfigFile(config_file):
         success_status_codes = config_dict.get('success_status_codes',G.default_success_status_codes)
         threads = config_dict.get('start_threads',G.default_threads)
         cpu_affinity = config_dict.get('cpu_affinity',[])
+        syslog_server_url = config_dict.get('syslog_server_url','')
 
         ##──── Check URL and METHOD - required data
         if (config_dict.get('url',None) is None) or (config_dict.get('url',None) == ""):
@@ -283,9 +297,39 @@ def validateConfigFile(config_file):
             raise StressAnAPIConfigException(f'{str(ERR)}') from None
         new_config_dict['cpu_affinity'] = cpu_affinity
 
+        ##──── validate syslog server url 
+        syslog_server = {}
+        if syslog_server_url != '':
+            result = urllib.parse.urlparse(syslog_server_url)
+            result = result._asdict()
+            if result.get('path','').lower() != '/dev/log':
+                syslog_server['scheme'] = result['scheme']
+                if syslog_server['scheme'].lower() not in ['udp','tcp']:
+                    raise StressAnAPIConfigException(f'Error in "syslog_server_url", invalid protocol - {str(syslog_server)}') from None
+                syslog_server['host'],syslog_server['port'],*junk = str(result['netloc']+":").split(":")
+                syslog_server['facility'] = result['path'].replace('/','').lower()
+                try:
+                    syslog_server['port']  = int(syslog_server['port'])
+                except:
+                    raise StressAnAPIConfigException(f'Error in "syslog_server_url", missing/invalid port number - {str(syslog_server)}') from None
+                try:
+                    syslog_server['facility_number'] = SYSLOG_FACILITIES[syslog_server['facility']]
+                except:
+                    raise StressAnAPIConfigException(f'Error in "syslog_server_url", invalid syslog facility name - {str(syslog_server)}') from None
+                syslog_server['url'] = f"{syslog_server['scheme']}://{syslog_server['host']}:{syslog_server['port']}/{syslog_server['facility']}"
+            else:
+                syslog_server['scheme'] = '/dev/log'
+                syslog_server['url'] = syslog_server['scheme']
+                
+            logDebug(f"Syslog server configuration: {syslog_server}")
+        new_config_dict['syslog_server'] = syslog_server
+        
+        new_config_dict['stats_window_size'] = G.stats_window_size
+        new_config_dict['garbage_collector_interval'] = G.garbage_collector_interval
+        
         ##──── set the values to the G.config global variable
         G.config = configFile(os.path.realpath(config_file),new_config_dict,url,method,post_data,headers,timeout,success_status_codes,
-                            interval,burst,threads,cpu_affinity,start_time)
+                            interval,burst,threads,cpu_affinity,syslog_server,start_time)
     except Exception as ERR:
         logDebug(f"failed at validateConfigFile: {str(ERR)}")
         return False
@@ -663,6 +707,19 @@ class elapsedTimer:
         self.time = None
         return timer_string if with_brackets else timer_string[1:-1]
 
+##──── A decorator for cache with TTL - pip install cachettl ─────────────────────────────────────────────────────────────────────
+def cachettl(ttl=60, maxsize=None, typed=False):
+    """A minimal version of cachettl decorator without methods cache_info() and cache_clear()"""
+    def _decorator(func):
+        @functools.lru_cache(maxsize=maxsize, typed=typed)
+        def _new_lrucache(*args, __time_modificator, **kwargs):
+            return func(*args, **kwargs)
+        @functools.wraps(func)
+        def _wrapped(*args, **kwargs):
+            return _new_lrucache(*args, **kwargs, __time_modificator=int(time.time() / ttl))
+        return _wrapped
+    return _decorator
+
 ##──── Decorator to get the elapsed time of a function ───────────────────────────────────────────────────────────────────────────
 def showElapsedTimeDecorator(method):
     def decorated_method(*args, **kwargs):
@@ -729,42 +786,47 @@ class AtomicCounter:
     def value(self): # returns the current value of the counter
         return next(self._counter) - next(self._counter_access)
 
-##──── AN ELEGANT, FAST AND THREAD SAFE COUNTER WITH AVERAGE
+##──── A counter for calculate interactions per second 
 class AtomicAverageCounter:
     def __init__(self, max_window_size:int=50000):
         self.__max_window_size = max_window_size
         self.__lock = threading.RLock()
-        self.__counter = itertools.count(0)
-        self.__counter_access = itertools.count(0)
         self.__time_data = []
         self.__last_time = None
+        # threading.Thread(target=self.__thread_cut_list_window_size,daemon=True).start()
 
     ##──── Every 60 seconds this function truncates the list that stores the request times to avoid high memory consumption. ────
     def __thread_cut_list_window_size(self):
         while True:
-            time.sleep(60)
-            with self.__lock:
-                ##──── Keep the last '__max_window_size' records and discard the rest 
-                # logDebug(f"Current size..: {len(self.__time_data)} - First item: {self.__time_data[0]} - Last Item: {self.__time_data[-1]}")
-                self.__time_data = self.__time_data[-self.__max_window_size:]
-                # logDebug(f"After list cut: {len(self.__time_data)} - First item: {self.__time_data[0]} - Last Item: {self.__time_data[-1]}")
-
+            time.sleep(10)
+            with elapsedTimer() as elapsed:
+                with self.__lock:
+                    size_before = sys.getsizeof(self.__time_data)
+                    self.__time_data = self.__time_data[-self.__max_window_size:]
+            print(f"Cutting {size_before} >> {sys.getsizeof(self.__time_data)} {elapsed.text()}")
+            
     def start(self):
         self.__last_time = time.monotonic()
         self.mark = self.__mark
         self.get_average = self.__get_average
         self.reset = self.__reset
-        threading.Thread(target=self.__thread_cut_list_window_size,daemon=True).start()
+        self.time_sum = 0.0
+        self.counter = 0
         return True
 
+    def reset_counter(self):
+        with self.__lock:
+            self.__time_data.clear()
+        
     def mark(self):...
     def __mark(self):
         with self.__lock:
             now = time.monotonic()
             delta = now - self.__last_time
             self.__last_time = now
-            self.__time_data.append(delta)
-            next(self.__counter)
+            # self.__time_data.append(delta)
+            self.time_sum += delta
+            self.counter += 1
 
     def get_average(self)->list:return [0.0, 0.0]
     def __get_average(self)->list:
@@ -777,39 +839,23 @@ class AtomicAverageCounter:
         finally:
             return [times_per_sec, secs_per_time]
 
-    def reset_counter(self):
-        self.__counter = itertools.count(0)
-        self.__counter_access = itertools.count(0)
-        return True
-
     def reset(self)->list:return [0, 0.0]
     def __reset(self)->list:
         try:
-            value_counter, value_timesum = 0,0.0
+            # value_counter, value_timesum = 0,0.0
             with self.__lock:
-                value_counter = len(self.__time_data)
-                value_timesum = math.fsum(self.__time_data)
-                self.__time_data.clear()
-                self.__counter = itertools.count(0)
-                self.__counter_access = itertools.count(0)
+                # value_counter = len(self.__time_data)
+                # value_timesum = math.fsum(self.__time_data)
+                # self.__time_data.clear()
+                value_counter = self.counter
+                value_timesum = self.time_sum
+                self.counter = 0
+                self.time_sum = 0.0
                 self.__last_time = time.monotonic()
         except Exception as ERR:
             value_counter, value_timesum = 0,0.0
         finally:
             return [value_counter,value_timesum]
-
-    @property
-    def value(self):
-        return next(self.__counter) - next(self.__counter_access)
-    @property
-    def value_timesum(self):
-        try:
-            with self.__lock:
-                value_sum = math.fsum(self.__time_data)
-        except Exception as ERR:
-            value_sum = 0.0
-        finally:
-            return value_sum
 
 ##################################################################################################################################
 ##################################################################################################################################
@@ -935,8 +981,8 @@ class classTerminal:
         try:
             self.max_width = os.get_terminal_size().columns - 3
         except:
-            self.max_width = 135
-        self.max_width = 135 if self.max_width > 135 else self.max_width
+            self.max_width = 134
+        self.max_width = 134 if self.max_width > 135 else self.max_width
         if ('--notime' in sys.argv and '--nodate' in sys.argv) or ('--nodatetime' in sys.argv):
             self.width = self.max_width + 3
         elif '--nodate' in sys.argv:
@@ -1076,7 +1122,7 @@ def jsonSerial(obj):
 ##──── Validates an URL ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 def isValidURL(uri):
     try:
-        result = urlparse(uri)
+        result = urllib.parse.urlparse(uri)
         return all([result.scheme, result.netloc])
     except AttributeError:
         return False
@@ -1190,20 +1236,30 @@ def shortenErrorMessage(string:str,max_width:int=128,placeholder:str="(..)"):
 #deflogging
 def log(message:str="",end:str="\n"):
     print(getLogDate()+str(message),end=end)
+def logSyslog(message:str="",end:str="\n"):
+    log_string = getLogDate()+str(message)
+    G.logger.info(stripColor(log_string))
+    print(log_string,end=end)
 
 def logDebug(message:str="",end:str="\n"):
-    print(getLogDate()+cDebug("[DEBUG] "+str(message)),end=end)
+    # print(getLogDate()+cDebug("[DEBUG] "+str(message)),end=end)
+    log(cDebug("[DEBUG] "+str(message)))
+def logDebugSyslog(message:str="",end:str="\n"):
+    print(cDebug("[DEBUG] "+str(message)),end=end)
+    G.logger.debug(stripColor(message))
 
 def logEmpty(message:str="",end:str="\n"):pass
 def logResponseEmpty(text_id,method,url,response_code,response_body,elapsed_time):pass
+def logResponseSyslog(text_id,method,url,response_code,response_body,elapsed_time):
+    G.logger.info(f"{G.middot} {text_id} {method} {url} - {stripColor(getFormattedStatusCode(response_code))} {response_body.strip()} {elapsed_time}")
 
 # @showElapsedTimeAverageDecorator(window_size=5000)
 def logResponse(text_id,method,url,response_code,response_body,elapsed_time):pass
 # @showElapsedTimeAverageDecorator(window_size=5000)
 def _logResponse(text_id,method,url,response_code,response_body,elapsed_time):
-    print(getLogDate()+f"{G.middot} {text_id} {method} {url} - {getFormattedStatusCode(response_code)} {elapsed_time}")
+    log(f"{G.middot} {text_id} {method} {url} - {getFormattedStatusCode(response_code)} {elapsed_time}")
 def _logResponseBody(text_id,method,url,response_code,response_body,elapsed_time):
-    print(getLogDate()+f"{G.middot} {text_id} {method} {url} - {getFormattedStatusCode(response_code)} {cDarkYellow(response_body.strip())} {elapsed_time}")
+    log(f"{G.middot} {text_id} {method} {url} - {getFormattedStatusCode(response_code)} {cDarkYellow(response_body.strip())} {elapsed_time}")
 
 ##──── Returns the current date time to be used with log to stdout functions ─────────────────────────────────────────────────────
 def getLogDateEmpty():return ""
@@ -1223,6 +1279,95 @@ def logGetPID():return ""
 
 ##################################################################################################################################
 ##################################################################################################################################
+
+  ### #   #   ###  #      ##    ###         ###  ####  ###   #  #  ####  ###
+ #     # #   #     #     #  #  #           #     #     #  #  #  #  #     #  #
+  ##    #     ##   #     #  #  # ##         ##   ###   ###   #  #  ###   ###
+    #   #       #  #     #  #  #  #           #  #     # #    ##   #     # #
+ ###    #    ###   ####   ##    ###        ###   ####  #  #   ##   ####  #  #
+
+SYSLOG_FACILITIES = {'kernel':0,'user':1,'mail':2,'daemon':3,'auth':4,'syslog':5,'lpr':6,'news':7,'uucp':8,
+                      'clock':9,'authpriv':10,'ftp':11,'ntp':12,'security':13,'console':14,'cron':15,
+                      'local0':16,'local1':17,'local2':18,'local3':19,'local4':20,'local5':21,'local6':22,'local7':23}
+
+SYSLOG_FACILITIES_BY_ID = {v:k for k,v in SYSLOG_FACILITIES.items()}
+
+class ReconnectingSysLogHandler(logging.handlers.SysLogHandler):
+    def __init__(self, *args, **kwargs):
+        self._is_retry = False
+        try:
+            super(ReconnectingSysLogHandler, self).__init__(*args, **kwargs)
+            self._is_retry = False
+        except Exception as ERR:
+            raise StressAnAPIException(f"Failed to connect to syslog server {G.config.syslog_server}. {str(ERR)}") from None
+    def is_socketstream_and_not_unixsocket(self):
+        return self.socktype == socket.SOCK_STREAM and not self.unixsocket
+    def _reconnect(self):
+        if self.socket:
+            self.socket.close()
+        self.socket = socket.socket(socket.AF_INET, self.socktype)
+        if (self.socktype == socket.SOCK_STREAM or self.socktype == socket.SOCK_DGRAM):
+            self.socket.connect(self.address)
+    def handleError(self, record):
+        if self._is_retry:
+            return
+        self._is_retry = True
+        try:
+            __, exception, __ = sys.exc_info()
+            if isinstance(exception, socket.error) and exception.errno == 32:
+                try: self._reconnect()
+                except Exception as ERR: 
+                    self.sendErrorMessage(f"Failed at syslog handler self._reconnect(B): {str(ERR)}")
+                    self._is_retry = True
+                else: 
+                    self.emit(record)
+        except Exception as ERR: 
+            self.sendErrorMessage(f"Failed at syslog handler self._reconnect(A): {str(ERR)}")
+        finally:
+            self._is_retry = False
+    @cachettl(ttl=10)
+    def sendErrorMessage(self,message):
+        log.error(sNegative(message))
+
+def getSyslogLogger(logger_name:str,scheme:str,host:str,port:int,facility=logging.handlers.SysLogHandler.LOG_LOCAL7,log_level='INFO'):
+    numeric_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise ValueError('Invalid log level: %s' % log_level) from None
+    # The 1st blank space in the loggername is required ONLY for rsyslog otherwise you can´t filter 
+    # the messages by $programname nor $msg. I don´t know why.
+    logger = logging.getLogger("%s"%(logger_name)) 
+    logger.setLevel(logging.DEBUG)  # Definindo o nível mais baixo para garantir que todos os logs sejam enviados ao syslog
+    # if syslog_address.startswith('tcp://'):
+    #     if str(syslog_address[6:]).find(":") < 0:
+    #         raise ValueError(f'Unknown value for syslog_addr: {syslog_address}. Missing port number.')
+    #     else:
+    #         host,port = syslog_address[6:].split(":")
+    #     syslog_handler = ReconnectingSysLogHandler(address=(host,int(port)), facility=facility, socktype=socket.SOCK_STREAM)
+    # elif syslog_address.startswith('udp://'):
+    #     if str(syslog_address[6:]).find(":") < 0:
+    #         raise ValueError(f'Unknown value for syslog_addr: {syslog_address}. Missing port number.')
+    #     else:
+    #         host,port = syslog_address[6:].split(":")
+    #     syslog_handler = ReconnectingSysLogHandler(address=(host,int(port)), facility=facility, socktype=socket.SOCK_DGRAM)
+    # else:
+    #     syslog_handler = logging.handlers.SysLogHandler(address='/dev/log', facility=facility)
+    if scheme == 'udp':
+        syslog_handler = ReconnectingSysLogHandler(address=(host,int(port)), facility=facility, socktype=socket.SOCK_DGRAM)
+    elif scheme == 'tcp':
+        syslog_handler = ReconnectingSysLogHandler(address=(host,int(port)), facility=facility, socktype=socket.SOCK_STREAM)
+    else: # scheme == '/dev/log'
+        syslog_handler = logging.handlers.SysLogHandler(address='/dev/log', facility=facility)        
+    syslog_handler.setLevel(numeric_level)
+    syslog_handler.propagate = False
+    formatter = logging.Formatter(G.syslog_message_formatter)
+    syslog_handler.setFormatter(formatter)
+    logger.addHandler(syslog_handler)
+    # G.logger_handler = syslog_handler
+    return logger
+
+##################################################################################################################################
+##################################################################################################################################
+
  ###   #  #  #  #         ###   ##   #  #  #  #   ##   #  #  ###
  #  #  #  #  ## #        #     #  #  ####  ####  #  #  ## #  #  #
  ###   #  #  # ##        #     #  #  ####  ####  #  #  # ##  #  #
@@ -1387,16 +1532,16 @@ def readKey():
 def pause():
     if G.event_pause.is_set():
         counterAverage.reset()
-        log(cGrey(line.middot2s))
+        log(cGrey(line.middot1s))
         log(f">>> {cWhite(f'Resuming the application after {getTimeHumanReadable(G.event_pause_time)}')}")
-        log(cGrey(line.middot2s))
+        log(cGrey(line.middot1s))
         G.event_pause.clear()
     else:
         counterAverage.reset()
         G.event_pause_time = time.monotonic()
-        log(cGrey(line.middot2s))
+        log(cGrey(line.middot1s))
         log(f">>> {cWhite('PAUSE requested!')}")
-        log(cGrey(line.middot2s))
+        log(cGrey(line.middot1s))
         G.event_pause.set()
 
 def keyMemInfo():
@@ -1421,48 +1566,101 @@ def decreaseThreads():
         log(f"  {G.bold_left} Joining thread '{thread_name}' pid:{thread_id}... {getPluralString(len(G.thread_list),'thread','threads')} currently running")
 
 def increaseTimeout():
-    G.config.timeout = G.config.timeout * 1.10   # +10%
-    log("  + Increasing the request timeout to %.6f sec"%(G.config.timeout))
+    limit_reached = ''
+    G.config.timeout = round(G.config.timeout, 5)
+    if G.config.timeout >= 60.0:
+        G.config.timeout = 60.0
+        limit_reached = '(limit reached!)'
+    elif G.config.timeout >= 0.00001 and G.config.timeout < 0.0001:
+        G.config.timeout = round(G.config.timeout + 0.00001, 5)
+    elif G.config.timeout >= 0.0001 and G.config.timeout < 0.001:
+        G.config.timeout = round(G.config.timeout + 0.0001, 5)
+    elif G.config.timeout >= 0.001 and G.config.timeout < 0.01:
+        G.config.timeout = round(G.config.timeout + 0.001, 5)
+    elif G.config.timeout >= 0.01 and G.config.timeout < 0.1:
+        G.config.timeout = round(G.config.timeout + 0.01, 5)
+    elif G.config.timeout >= 0.1:
+        G.config.timeout = round(G.config.timeout + 0.1, 5)
+    log(f"  + Increasing the request timeout to %.6f sec {limit_reached}"%(G.config.timeout))
 
 def decreaseTimeout():
-    if G.config.timeout <= 0.00001:
-        G.config.timeout = 0.00001
-        timeout_limit = '(limit reached!)'
+    limit_reached = ''
+    G.config.timeout = round(G.config.timeout, 5)
+    if G.config.timeout > 0.1:
+        G.config.timeout = round(G.config.timeout - 0.1, 5)
+    elif G.config.timeout > 0.01:
+        G.config.timeout = round(G.config.timeout - 0.01, 5)
+    elif G.config.timeout > 0.001:
+        G.config.timeout = round(G.config.timeout - 0.001, 5)
+    elif G.config.timeout > 0.0001:
+        G.config.timeout = round(G.config.timeout - 0.0001, 5)
+    elif G.config.timeout > 0.00001:
+        G.config.timeout = round(G.config.timeout - 0.00001, 5)
     else:
-        G.config.timeout = G.config.timeout / 1.10   # +10%
-        timeout_limit = ''
-    log(f"  - Decreasing the request timeout to %.6f sec {timeout_limit}"%(G.config.timeout))
+        G.config.timeout = 0.000010
+        limit_reached = '(limit reached!)'
+    log(f"  - Decreasing the request timeout to %.6f sec {limit_reached}"%(G.config.timeout))
 
 def increaseInterval():
-    G.config.interval = G.config.interval * 1.10   # +10%
-    if G.config.interval > 2.0:
-        G.config.interval = 2.0
-    log(f"  {G.light_up} Increasing the interval between requests to %.6f sec (slower)"%(G.config.interval))
+    limit_reached = '(slower)'
+    G.config.interval = round(G.config.interval, 5)
+    if G.config.interval >= 5.0:
+        G.config.interval = 5.0
+        limit_reached = '(limit reached!)'
+    elif G.config.interval >= 0.00001 and G.config.interval < 0.0001:
+        G.config.interval = round(G.config.interval + 0.00001, 5)
+    elif G.config.interval >= 0.0001 and G.config.interval < 0.001:
+        G.config.interval = round(G.config.interval + 0.0001, 5)
+    elif G.config.interval >= 0.001 and G.config.interval < 0.01:
+        G.config.interval = round(G.config.interval + 0.001, 5)
+    elif G.config.interval >= 0.01 and G.config.interval < 0.1:
+        G.config.interval = round(G.config.interval + 0.01, 5)
+    elif G.config.interval >= 0.1:
+        G.config.interval = round(G.config.interval + 0.1, 5)
+    log(f"  {G.light_up} Increasing the interval between requests to %.6f sec {limit_reached}" % (G.config.interval))
 
 def decreaseInterval():
-    G.config.interval = G.config.interval / 1.10     # +10%
-    if G.config.interval < 0.000010:
+    limit_reached = '(faster)'
+    G.config.interval = round(G.config.interval, 5)
+    if G.config.interval > 0.1:
+        G.config.interval = round(G.config.interval - 0.1, 5)
+    elif G.config.interval > 0.01:
+        G.config.interval = round(G.config.interval - 0.01, 5)
+    elif G.config.interval > 0.001:
+        G.config.interval = round(G.config.interval - 0.001, 5)
+    elif G.config.interval > 0.0001:
+        G.config.interval = round(G.config.interval - 0.0001, 5)
+    elif G.config.interval > 0.00001:
+        G.config.interval = round(G.config.interval - 0.00001, 5)
+    else:
         G.config.interval = 0.000010
-    log(f"  {G.light_down} Decreasing the interval between requests to %.6f sec (faster)"%(G.config.interval))
+        limit_reached = '(limit reached!)'
+    log(f"  {G.light_down} Decreasing the interval between requests to %.6f sec {limit_reached}"%(G.config.interval))
 
 def increaseBurst():
+    limit_reached = '(faster)'
     G.config.burst += 1
     if G.config.burst > 300:
         G.config.burst = 300
-    log(f"  {G.light_right} Increasing the burst of requests to {getPluralString(G.config.burst,'request','requests')} (faster)")
+        limit_reached = '(limit reached!)'
+    log(f"  {G.light_right} Increasing the burst of requests to {getPluralString(G.config.burst,'request','requests')} {limit_reached}")
 
 def decreaseBurst():
+    limit_reached = '(slower)'
     G.config.burst -= 1
-    if G.config.burst <= 1:
+    if G.config.burst < 1:
         G.config.burst = 1
-    log(f"  {G.light_left} Decreasing the burst of requests to {getPluralString(G.config.burst,'request','requests')} (slower)")
+        limit_reached = '(limit reached!)'
+    log(f"  {G.light_left} Decreasing the burst of requests to {getPluralString(G.config.burst,'request','requests')} {limit_reached}")
 
 def resetStats():
     httpStats.reset()
     timeStats.reset()
     counter.reset()
     counterAverage.reset_counter()
+    log(cGrey(line.middot1s))
     log(f"  > All statistics have been reset as requested")
+    log(cGrey(line.middot1s))
 
 def displayCurrentConfiguration():
     log(line.single)
@@ -1475,8 +1673,8 @@ def displayAverageTimeStats():
     if G.event_pause.is_set():
         log(f">>> Average: 0 requests/sec (PAUSED)")
     else:
-        lines_per_sec, sec_per_lines = counterAverage.get_average()
-        log(f">>> Average {'%.0f'%(lines_per_sec)} req/sec - Min/Avg/Max: {'%.6f'%(timeStats.min_time)}/{'%.6f'%(timeStats.avg_time)}/{'%.6f'%(timeStats.max_time)} - Total: {counter.value} reqs")
+        requests_per_sec, sec_per_requests = counterAverage.get_average()
+        log(f">>> Average {'%.0f'%(requests_per_sec)} req/sec - Min/Avg/Max: {'%.6f'%(timeStats.min_time)}/{'%.6f'%(timeStats.avg_time)}/{'%.6f'%(timeStats.max_time)} - Total: {counter.value} reqs")
 
 def displayFullHttpStats():
     def remove9XXFromString(col_str): # remove errors 900 used by internal control
@@ -1484,7 +1682,8 @@ def displayFullHttpStats():
     try:
         with lock:
             log(line.single)
-            log(f">>> {cWhite('Statistics: Success vs. Errors')}")
+            log(f">>> {cWhite('Statistics of Success vs. Errors:')}")
+            log("")
             max_number_len = len(str(sorted(list(httpStats.asdict.values()))[-1]))
             max_size = (classTerminal().max_width-ansiLen(getLogDate())-10)
             max_col_size = max_size // 2
@@ -1514,11 +1713,15 @@ def displayFullHttpStats():
                 log(f"      {remove9XXFromString(col1_str):<{max_col_size}} {remove9XXFromString(col2_str)}")
             log(line.middot1s)
 
-            log(f">>> {cWhite(f'Statistics: Elapsed time of last {timeStats.window_size} requests')}")
+            log(f">>> {cWhite(f'Statistics of elapsed time of the last {timeStats.window_size} requests:')}")
+            log("")
             stats = timeStats.stats()
-
-            a = Table(cols=8,max_size=max_size+10,with_border=False,border_size=0).head(['Total Requests','Min','Avg','Max','50th pct','75th pct','90th pct','99th pct']).row([counter.value,*list(stats.values())]).get_table()
-            [log(f"    {line}") for line in a]
+            min,avg,max,pct50,pct75,pct90,pct99 = stats.values()
+            min_avg_max = f"{min}  {avg}  {max}"
+            requests_per_sec, sec_per_requests = counterAverage.get_average()
+            requests_per_sec = 'Paused!' if G.event_pause.is_set() else '%.0f'%(requests_per_sec)
+            a = Table(cols=7,max_size=max_size,with_border=False,border_size=0).head(['Total','Req/Sec',' Min       Avg       Max'.center(len(min_avg_max)),'50th pct','75th pct','90th pct','99th pct']).row([counter.value,requests_per_sec,min_avg_max,pct50,pct75,pct90,pct99]).get_table()
+            [log(f"{line}") for line in a]
 
             log(line.single)
     except Exception as ERR:
@@ -1574,7 +1777,7 @@ class threadMakeRequestsURLLib(threading.Thread):
         self.text_id = f"[#{self.name.split('-')[1].zfill(zfill_len)}]"
 
     def run(self):
-        method, url, timeout = G.config.method, G.config.url, G.config.timeout
+        method, url = G.config.method, G.config.url
         data = str(json.dumps(G.config.post_data,sort_keys=False,ensure_ascii=False,separators=(",",":"))).encode()
         if method == "GET":
             req = urllib.request.Request(url=G.config.url,method=G.config.method)
@@ -1598,7 +1801,7 @@ class threadMakeRequestsURLLib(threading.Thread):
                 if self.stop.is_set(): break
                 try:
                     with elapsedTimer() as elapsed:
-                        response_code,response_body = self.urllib_open(req,timeout)
+                        response_code,response_body = self.urllib_open(req,G.config.timeout)
                     self.timeStats.save(elapsed.time)
                 except Exception as ERR:
                     logDebug(f"urllib_get error: {str(ERR)}")
@@ -1734,6 +1937,8 @@ def startApp():
     log(cWhite(f">>> Starting {__appname__} v{__version__} - PID: {os.getpid()} - {dt.now().strftime(G.date_format_no_milisec)}"))
     log(line.middot)
     log(f">>> Loaded configuration from {cWhite(str(G.config.config_file))} [{G.config.elapsed_load_time}]")
+    if G.logger is not None:
+        log(f"  - Logging to syslog server at {cWhite(G.config.syslog_server['url'])}")
     displayConfig()
     log(cGrey(line.middot1s))
     log(f">>> All done in {'%.6f'%(time.monotonic()-G.start_time)}'s! {cWhite(f'It{G.singleQuote}s Showtime!')}")
@@ -1744,10 +1949,10 @@ def startApp():
     threading.Thread(target=threadGarbageCollector,daemon=True).start()
 
     counter = AtomicCounter()
-    counterAverage = AtomicAverageCounter()
+    counterAverage = AtomicAverageCounter(max_window_size=G.stats_window_size)
     counterAverage.start()
 
-    timeStats = classTimeStats()
+    timeStats = classTimeStats(window_size=G.stats_window_size)
     httpStats = classHttpStats()
 
     for I in range(G.config.threads):
@@ -1836,7 +2041,7 @@ def main_function():
     if ('-d' in sys.argv) or ('--debug' in sys.argv):
         G.DEBUG = True
     if G.DEBUG:
-        sys.tracebacklimit = 3
+        sys.tracebacklimit = 0
     else:
         logDebug.__code__ = logEmpty.__code__
     if (('--nodate' in sys.argv) and ('--notime' in sys.argv)) or ('--nodatetime' in sys.argv):
@@ -1858,7 +2063,6 @@ def main_function():
         args.debug = True
 
     G.argsvars = vars(args)
-    logDebug(f"argparser vars: {G.argsvars}")
 
     if args.template and args.configfile == '':
         ppJson(G.default_template,compact=False)
@@ -1871,6 +2075,16 @@ def main_function():
             if not validateConfigFile(args.configfile):
                 raise StressAnAPIException(f'Invalid configuration found at {args.configfile}') from None
             else:
+                if G.config.syslog_server != {}:
+                    try:
+                        sys.tracebacklimit = 0
+                        G.logger = getSyslogLogger(__appname__,G.config.syslog_server['scheme'],G.config.syslog_server.get('host',''),G.config.syslog_server.get('port',0),facility=G.config.syslog_server.get('facility_number',0))
+                        log.__code__ = logSyslog.__code__
+                        logResponse.__code__ = logResponseEmpty.__code__ = logResponseSyslog.__code__
+                        logDebug.__code__ = logDebugSyslog.__code__ if G.DEBUG else logDebug.__code__
+                    except Exception as ERR:
+                        raise StressAnAPIConfigException(str(ERR)) from None
+                logDebug(f"argparser vars: {G.argsvars}")
                 try:
                     with classStressAnAPI() as StressAnAPI:
                         return startApp()
