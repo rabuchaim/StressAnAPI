@@ -1,4 +1,4 @@
-# StressAnAPI v1.0.1
+# StressAnAPI v1.0.2
 
 StressAnAPI is a Pure Python application for stress testing on APIs. Easily configurable via command line. Use the arrow keys to increase speed and bursts, see results, requests per seconds and much more.
 
@@ -10,12 +10,12 @@ StressAnAPI is a Pure Python application for stress testing on APIs. Easily conf
 pip install stressanapi
 ```
 
-A script file will be installed in /usr/local/bin/stressanapi and you can run the application from any path just typing ```stressanapi```.
+A script file will be installed in `/usr/local/bin/stressanapi` and you can run the application from any path just typing `stressanapi`.
 
 ![](https://raw.githubusercontent.com/rabuchaim/StressAnAPI/main/images/stressanapi-01.png)
 
 
-**StressAnAPI is Pure Python**, so it will not install any libraries on your system. The entire source (1 single file) will be placed in ```/usr/local/lib/python3.XX/dist-packages/stressanapi```
+**StressAnAPI is Pure Python**, so it will not install any libraries on your system. The entire source (1 single file) will be placed in `/usr/local/lib/python3.XX/dist-packages/stressanapi`
 
 ## The Configuration File
 
@@ -30,7 +30,7 @@ The configuration file is based on the json format and requires a minimum of 2 k
 
 > *The json file is not like a Python dictionary, it is similar, but it requires double quotes in the names of keys and values, it does not accept extra commas, and the first line must have only a curly bracket '{', and the last line must have only the closing of the initial curly bracket '}'. When in doubt, create the configuration file in Visual Studio Code, and the syntax highlight will show you if there are errors.*
 
-There are more options that can be configured, to see them just type the ```--template``` command. This option already shows a valid json file, just change it according to your needs and/or remove what you don't want to customize.
+There are more options that can be configured, to see them just use the `--template` command. This option already shows a valid json file, just change it according to your needs and/or remove what you don't want to customize.
 
 ```bash
 # stressanapi --template
@@ -46,7 +46,7 @@ There are more options that can be configured, to see them just type the ```--te
       "token": "mysupertoken"
    },
    "headers": {
-      "User-Agent": "StressAnAPI v1.0.1",
+      "User-Agent": "StressAnAPI v1.0.2",
       "Host": "set_your_api_hostname_here",
       "Content-Type": "application/json",
       "X-Forwarded-For": "1.2.3.4",
@@ -60,11 +60,12 @@ There are more options that can be configured, to see them just type the ```--te
       202,
       204
    ],
-   "user_agent": "StressAnAPI v1.0.1",
+   "user_agent": "StressAnAPI v1.0.2",
    "start_interval": 0.5,
    "start_burst": 1,
    "start_threads": 1,
-   "cpu_affinity": [-1]
+   "cpu_affinity": [-1],
+   "syslog_server_url":"udp://127.0.0.1:514/local7"
 }
 ```
 - **`url`**: I think this field is self-explanatory, right?
@@ -73,12 +74,12 @@ There are more options that can be configured, to see them just type the ```--te
 - **`headers`**: Enter the headers you want to send to your API. The `content-type` is an important header. Headers are sent in any method.
 - **`timeout`**: Enter the timeout you want to work. The application does not make retries. You can increase/decrease the timeout using the + and - keys on your keyboard to test an ideal and safe timeout value to configure on your API proxy server.
 - **`success_status_codes`**: Enter the status_codes that you consider "success" to return from your API for the call you configured. This information is important in generating statistics, where only the methods reported here are considered successful. If you omit this field, by default, status codes 200, 201, 202 and 204 will be considered successful.
-- **`user_agent`**: If this field is omitted, the default user-agent "StressAnAPI v1.0.1" will be used.
+- **`user_agent`**: If this field is omitted, the default user-agent "StressAnAPI v1.0.2" will be used.
 - **`start_interval`**: Enter the interval between one request and another. This is necessary to allow you to increase/decrease the speed of requests and evaluate how your API behaves with an increase in requests and their impacts. By default, there is a 1 second interval between each request. You can decrease/increase this interval anytime using the UP and DOWN keys on your keyboard.
 - **`start_burst`**: Burst is the number of requests before an interval. You can increase and decrease the burst using the RIGHT and LEFT keys on your keyboard. By default, the application makes 1 request + interval. You can increase it to 2 requests + interval, 10 requests + interval, and so on...
 - **`start_threads`**: This value simulates user concurrency in your API. Use with caution. You can increase/decrease the number of threads using the < and > keys on your keyboard.
-- **`cpu_affinity`**: This is a very important option. If you omit this value, Python will use any processor and you will have concurrency in the stress test. To test the best performance of your API together with StressAnAPI, I suggest defining a CPU core to be used here. If you set the value '-1', the application will inform the Linux operating system to isolate the stressanapi.py process on the last available processor. Do a test without using this option, and then using this option, you will see that it is possible to obtain more requests if you isolate stressanapi on a single CPU core. The same thing with the API server, always leave it isolated in a core all to itself and performance will be much higher. Isolate the affinity of this process and let the operating system take care of the other processes. You can use the *psutil* library in your application to do this. Here we are using the ```taskset -cp [core_index] [pid]``` command to stay pure Python. You can also enter more than 1 CPU Core, just enter this value as a list of integers. Ex: ```[0,1]``` and it will use the 1st and 2nd cpu core available on your machine.
-
+- **`cpu_affinity`**: This is a very important option. If you omit this value, Python will use any processor and you will have concurrency in the stress test. To test the best performance of your API together with StressAnAPI, I suggest defining a CPU core to be used here. If you set the value '-1', the application will inform the Linux operating system to isolate the stressanapi.py process on the last available processor. Do a test without using this option, and then using this option, you will see that it is possible to obtain more requests if you isolate stressanapi on a single CPU core. The same thing with the API server, always leave it isolated in a core all to itself and performance will be much higher. Isolate the affinity of this process and let the operating system take care of the other processes. You can use the *psutil* library in your application to do this. Here, we are using the ```taskset -cp [core_index] [pid]``` command to stay pure Python. You can also enter more than 1 CPU Core, just enter this value as a list of integers. Ex: ```[0,1]``` and it will use the 1st and 2nd cpu core available on your machine.
+- **`syslog_server_url`**: <font color=red>NEW!</font> Configure the address of your syslog server here to send request results, including the content of the responses. Supports "udp://ipaddr:port/facility", "tcp://ipaddr:port/facility" or "/dev/log". When sending to syslog you have a loss in StressAnAPI performance, but in some cases it is necessary for debugging, so this option is available. Use only if necessary.
 
 ## Running the application
 
@@ -111,7 +112,8 @@ The control is very intuitive and you can even play with it.
 
 ## A simple API server for testing
 
-Along with the application, there is also an API server for testing made with Tornado. To use this test server, simply run ```simple_stressanapi_server``` and install the Tornado library with ```pip install tornado```. But that's only if you want to use our little server to test StressAnAPI. By default, this server binds to IP 127.0.0.1, port 8000 and accepts any method (GET, POST, PUT, PATCH and DELETE) from the API root ```http://localhost:8000/anything_you_want```, and simply returns an "OK". You can change the --host and --port parameters.
+Along with the application, there is also an API server for testing made with Tornado. To use this test server, you need to install the Tornado library with `pip install tornado` and simply run `simple_stressanapi_server`. But that's only if you want to use our little server to test StressAnAPI. By default, this server binds to IP 127.0.0.1, port 8000 and accepts any method (GET, POST, PUT, PATCH and DELETE) from the API root `http://localhost:8000/anything_you_want`, and simply returns an "OK". You can change the --host and --port parameters, and you can even configure CPU affinity to isolate the server on a single processor.
+
 
 ```bash
 # simple_stressanapi_server
@@ -123,12 +125,15 @@ Installing collected packages: tornado
 Successfully installed tornado-6.4.1
 
 # simple_stressanapi_server.py -h
-usage: simple_stressanapi_server.py [-h] [--host <ip_address>] [--port <port_number>] [--log]
+usage: simple_stressanapi_server.py [-h] [--host <ip_address>] [--port <port_number>] [--cpu <cpu_index>] [--log]
+
+>>> Simple StressAnAPI Server v1.0.2
 
 options:
   -h, --help            show this help message and exit
   --host <ip_address>   enter the IP address to bind the server. Default: 127.0.0.1
   --port <port_number>  choose the port to listen on. Default: 8000
+  --cpu <cpu_index>     choose a CPU core to isolate the process of this API server. Accepted values: from 0 until <your cpu count - 1>
   --log                 enable Tornado pretty logging
 
 # simple_stressanapi_server.py
@@ -141,7 +146,11 @@ options:
 (...)
 ```
 
-## For the next releases:
+## Announcement and discussions group
+
+Join us in the Google Groups to receive notifications of new releases: https://groups.google.com/g/stressanapi
+
+## For the next releases
 
 - Possibility of reading files containing URL data, or even post_data and header fields. Something like: {"X-Forwarded-For": "random:ipv4"} where it will put a different randomic IPv4 for each request, or even {"name": "filerand:names.txt"}, where it will put the content of one of the lines names.txt file in the "name" field for each request **<< ON THE WAY**
 
