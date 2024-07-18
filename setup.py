@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='stressanapi',
-    version='1.0.1',
+    version='1.0.2',
     description='StressAnAPI is a Pure Python application for stress testing on APIs. Easily configurable with a json file. Use the arrow keys to control speed, bursts, threads, see results, requests per seconds and much more.',
     url='https://github.com/rabuchaim/StressAnAPI',
     author='Ricardo Abuchaim',
