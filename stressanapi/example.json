@@ -19,5 +19,5 @@
      "start_interval":0.5,
      "start_burst":1,
      "start_threads":1,
-     "cpu_affinity":[6]
+     "cpu_affinity":[0]
 }
