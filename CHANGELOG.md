@@ -1,3 +1,28 @@
+#### What's new in v1.0.3 - 22/July/2024
+
+- Found a bug in httpStats that if the server responded with "urlopen error timed out" in some cases it was not being counted correctly, and ONLY WHEN requesting statistics (key `S`) the application crashed. It should appear as error 901, but it appears as "None". Now it is being counted correctly and this problem should not occur anymore. If you notice the same behavior, run the application with the '--debug' option and open an issue providing steps to reproduce the problem. (https://github.com/rabuchaim/StressAnAPI/issues/1)
+
+- The "url" value of the configuration file can now accept template variables:
+    - %%randomipv4%% to be replaced by a random IPv4
+    - %%randomipv6%% to be replaced by a random IPv6
+    - %%randomprivateipv4%% to be replaced by a random Private IPv4
+    - %%randomint:val_min:val_max%% to be replaced by a random integer between 'val_min' and 'val_max'
+    
+    Example: 
+```
+        {
+            "url":"http://127.0.0.1:8000/api/v1/customer/%%randomint:1:10000%%",
+            "method":"GET"
+        }
+        
+        or
+        
+        {
+            "url":"http://127.0.0.1:8000/api/v1/testip/%%randomipv4%%",
+            "method":"GET"
+        }
+```
+
 #### What's new in v1.0.2 - 18/July/2024
 
 - Now we have a rounded increment/decrement in the functions decreaseInterval (DOWN key) and increaseInterval (UP key)
