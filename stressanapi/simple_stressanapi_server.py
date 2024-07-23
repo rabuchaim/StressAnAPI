@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Simple StressAnAPI Server v1.0.2"""
+"""Simple StressAnAPI Server v1.0.3"""
 import sys, os, argparse, threading, time, asyncio, random, logging, datetime as dt
 sys.tracebacklimit = 0
 try:
@@ -54,7 +54,7 @@ class MainHandler(tornado.web.RequestHandler):
         header_keys = list(self.request.headers.keys())
         self.write(f"GET request path: {self.request.path} - header keys: {','.join(header_keys)}")
     def post(self,*args):
-        self.set_status(self.return_a_random_error())
+        # self.set_status(self.return_a_random_error())
         arguments = tornado.escape.json_decode(self.request.body)
         arg_keys, arg_values = list(arguments.keys()), list(arguments.values())
         self.write(f"POST argument keys: {','.join(arg_keys)} - values: {','.join(arg_values)}")
